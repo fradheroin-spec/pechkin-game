@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Печкин спешит</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden;background:#9fd9ef;
+    font-family:Verdana,Tahoma,sans-serif;user-select:none;-webkit-user-select:none;touch-action:none}
+  #err{position:fixed;top:0;left:0;right:0;background:#c0392b;color:#fff;font-size:12px;
+    padding:6px 10px;display:none;z-index:99;word-break:break-all}
+  canvas{display:block;width:100vw;height:100vh}
+  .hud{position:absolute;top:10px;left:0;right:0;display:flex;justify-content:space-between;
+    padding:0 14px;color:#2b2118;font-weight:bold;font-size:15px;text-shadow:0 1px 0 rgba(255,255,255,.7);pointer-events:none}
+  #toast{position:absolute;top:20%;left:50%;transform:translateX(-50%) rotate(-2deg);
+    background:#fff8ec;color:#2b2118;border:2px dashed #d94f2a;
+    padding:8px 14px;font-size:14px;font-weight:bold;border-radius:4px;
+    opacity:0;transition:opacity .25s;pointer-events:none;max-width:86%;text-align:center;
+    box-shadow:0 3px 0 rgba(0,0,0,.12)}
+  #overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(43,33,24,.45)}
+  .card{background:#fff8ec;color:#2b2118;width:min(330px,88%);
+    border:2px solid #2b2118;border-radius:6px;padding:20px 16px 16px;position:relative;
+    box-shadow:6px 6px 0 rgba(43,33,24,.35);text-align:center}
+  .card::before{content:"";position:absolute;top:8px;right:8px;width:32px;height:38px;
+    border:2px dashed #d94f2a;border-radius:2px;
+    background:repeating-linear-gradient(45deg,transparent 0 4px,rgba(217,79,42,.15) 4px 8px)}
+  .card h2{font-size:18px;margin-bottom:12px}
+  .card .dist{font-size:30px;font-weight:bold;margin:6px 0 2px;color:#d94f2a}
+  .card .dist small{font-size:15px;color:#2b2118}
+  .card .hint{font-size:14px;line-height:1.5;margin:14px 0 14px;color:#4a3b2c;font-weight:bold}
+  .card button{font:inherit;font-weight:bold;font-size:15px;color:#fff8ec;
+    background:#d94f2a;border:none;border-radius:6px;padding:11px 24px;cursor:pointer;
+    box-shadow:0 3px 0 #9c3417}
+  .card button:active{transform:translateY(2px);box-shadow:0 1px 0 #9c3417}
+  #startTip{position:absolute;bottom:15%;left:0;right:0;text-align:center;color:#2b2118;
+    font-size:14px;font-weight:bold;text-shadow:0 1px 0 rgba(255,255,255,.7);pointer-events:none}
+</style>
+</head>
+<body>
+<div id="err"></div>
+<canvas id="cv" tabindex="0"></canvas>
+<div class="hud"><span id="scoreEl">0 м</span><span id="bestEl">🏆 0 м</span></div>
+<div id="toast"></div>
+<div id="startTip">Тап / клик — прыжок · свайп или ↓ — пригнуться</div>
+<div id="overlay"><div class="card">
+  <h2 id="ovTitle">Посылка не доехала…</h2>
+  <div class="dist"><span id="ovScore">0</span> <small>метров</small></div>
+  <div class="hint">Сыграй ещё раз, пока мы проверяем твой платёж</div>
+  <button id="againBtn" type="button">Ещё раз 🚲</button>
+</div></div>
+<script>
+"use strict";
+window.onerror=function(msg,src,line){
+  var e=document.getElementById("err");
+  e.style.display="block";e.textContent="Ошибка: "+msg+" (строка "+line+")";
+};
+
+/* ============ НАСТРОЙКИ ============ */
+var CFG={
+  BASE_SPEED:4.8,
+  MAX_SPEED:12.5,
+  SPEED_STEP:0.26,      /* прирост за каждое пройденное препятствие */
+  EASY_OBSTACLES:3,     /* первые N — только простые (лавочка/посылка) */
+  BIOME_LEN:8000,       /* длина локации: 1000 м */
+  MILESTONES:{
+    200:"Быстрее телеграммы! ✉️",
+    500:"Проверил дважды — отправил один раз!",
+    1000:"Посылка почти на месте! 📦",
+    1500:"Под роспись! ✍️",
+    2000:"Почтовый экспресс! 🚲",
+    3000:"Легенда отделения! 🏅"
+  },
+  BIOME_NAMES:["🏡 Деревня","🌲 Лес","🌾 Поле","🏙 Город"]
+};
+/* =================================== */
+
+var mem={};
+var store={
+  get:function(k){try{return localStorage.getItem(k);}catch(e){return (k in mem)?mem[k]:null;}},
+  set:function(k,v){try{localStorage.setItem(k,v);}catch(e){mem[k]=v;}}
+};
+(function(){try{
+  var s=document.createElement("script");
+  s.src="https://telegram.org/js/telegram-web-app.js";
+  s.onload=function(){try{var t=window.Telegram&&window.Telegram.WebApp;if(t){t.ready();t.expand();}}catch(e){}};
+  document.head.appendChild(s);
+}catch(e){}})();
+function haptic(type){try{
+  var t=window.Telegram&&window.Telegram.WebApp;
+  if(!t||!t.HapticFeedback)return;
+  if(type==="hit")t.HapticFeedback.notificationOccurred("error");
+  else t.HapticFeedback.impactOccurred("light");
+}catch(e){}}
+
+var cv=document.getElementById("cv"),ctx=cv.getContext("2d");
+var W=0,H=0,DPR=1,GY=0;
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  W=window.innerWidth;H=window.innerHeight;
+  cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  GY=Math.round(H*0.78);
+  if(P)P.x=Math.max(44,W*0.13);
+}
+window.addEventListener("resize",resize);
+
+var S={mode:"idle",t:0,speed:CFG.BASE_SPEED,dist:0,score:0,
+  best:+(store.get("pechkin_best")||0),
+  shownMs:{},obstacles:[],clouds:[],birds:[],bg:[],grass:[],stones:[],
+  groundX:0,spawned:0,passedCount:0,biome:0,biomeShown:-1};
+
+var P={x:60,y:0,vy:0,w:34,h:54,duckH:30,ducking:false,onGround:true,frame:0};
+var GRAV=0.62,JUMP=-12.2;
+function resetPlayer(){P.x=Math.max(44,W*0.13);P.y=GY;P.vy=0;P.ducking=false;P.onGround=true;}
+
+function curBiome(){return Math.floor(S.dist/CFG.BIOME_LEN)%4;} /* 0 деревня,1 лес,2 поле,3 город */
+
+/* ---------- фон: генераторы объектов по локациям ---------- */
+function rnd(a,b){return a+Math.random()*(b-a);}
+function pick(arr){return arr[Math.floor(Math.random()*arr.length)];}
+function makeBg(x,biome){
+  if(biome===0){ /* деревня: детальные избы */
+    var pal=pick([["#c9805a","#8a4f33"],["#b8a06e","#7d6a42"],["#9db07a","#5f7148"],["#c4a3b0","#8a6577"]]);
+    return {x:x,kind:"house",w:rnd(70,115),h:rnd(48,72),wall:pal[0],roof:pal[1],
+      win:2+Math.floor(Math.random()*2),attic:Math.random()<0.6,chim:Math.random()<0.8,fence:Math.random()<0.7};
+  }
+  if(biome===1){ /* лес */
+    if(Math.random()<0.75) return {x:x,kind:"tree",w:rnd(34,60),h:rnd(70,120),
+      tone:pick(["#4f7a45","#5d8a4e","#3f6b3a"])};
+    return {x:x,kind:"bush",w:rnd(26,44),h:rnd(16,26)};
+  }
+  if(biome===2){ /* поле */
+    var r=Math.random();
+    if(r<0.45) return {x:x,kind:"hay",w:rnd(36,52),h:rnd(24,34)};
+    if(r<0.65) return {x:x,kind:"mill",w:56,h:rnd(80,100)};
+    return {x:x,kind:"tree",w:rnd(30,44),h:rnd(55,85),tone:"#6b8f4e"};
+  }
+  /* город: многоэтажки */
+  return {x:x,kind:"city",w:rnd(60,100),h:rnd(80,125),
+    wall:pick(["#a6b4c0","#b5aca2","#aaa4bd","#9cadb8"]),
+    cols:2+Math.floor(Math.random()*3),ant:Math.random()<0.4};
+}
+function seedScenery(){
+  S.bg=[];S.grass=[];S.stones=[];S.clouds=[];S.birds=[];
+  var x=10;
+  while(x<W*1.6){var o=makeBg(x,curBiome());S.bg.push(o);x+=o.w+rnd(40,130);}
+  for(var i=0;i<24;i++)S.grass.push({x:Math.random()*W*1.2,y:GY+6+Math.random()*(H-GY-14)});
+  for(var j=0;j<12;j++)S.stones.push({x:Math.random()*W*1.2,y:GY+8+Math.random()*(H-GY-18),r:2+Math.random()*3});
+  for(var c=0;c<3;c++)S.clouds.push({x:Math.random()*W,y:30+Math.random()*H*0.22,s:rnd(0.3,0.7),r:rnd(16,36)});
+}
+
+/* ---------- препятствия ----------
+   прыжок: bench, pit, box, trash, mailbox
+   присед: pigeon, line (верёвка с бельём)                    */
+function spawn(){
+  var last=S.obstacles[S.obstacles.length-1];
+  var hard=Math.max(0,S.passedCount-28);
+  var density=Math.max(0.62,1-hard*0.012);
+  var airPx=S.speed*39.4;                       /* дистанция полного прыжка */
+  var minGap=Math.max((205+S.speed*30)*density, airPx+72);
+  if(last&&(W-last.x)<minGap+Math.random()*180*density)return;
+  var o,r=Math.random();
+  if(hard>0&&Math.random()<Math.min(0.20,hard*0.007)){
+    var dr=Math.random();
+    r=(dr<0.45)?0.75:(dr<0.75?0.85:0.95);      /* принудительно голубь / стая / тучка */
+  }
+  if(S.spawned<CFG.EASY_OBSTACLES){
+    o=(Math.random()<0.5)?{type:"bench",x:W+30,w:46,h:28}:{type:"box",x:W+30,w:44,h:38};
+  }
+  else if(r<0.11) o={type:"bench",  x:W+30,w:46,h:28};
+  else if(r<0.22) o={type:"box",    x:W+30,w:44,h:38+((Math.random()<0.4)?20:0)};
+  else if(r<0.32) o={type:"trash",  x:W+30,w:36,h:40};
+  else if(r<0.41) o={type:"mailbox",x:W+30,w:26,h:52};
+  else if(r<0.53) o={type:"pit",    x:W+30,w:56,h:0};
+  else if(r<0.61) o={type:"cat",    x:W+30,w:30,h:26,tail:0};
+  else if(r<0.70) o={type:"barrel", x:W+30,w:32,h:38};
+  else if(r<0.81) o={type:"pigeon", x:W+30,w:30,h:16,fy:GY-28,vx:1.5,wing:0};
+  else if(r<0.91) o={type:"flock", x:W+30,w:52,fy:GY-36,h:124,wing:0};
+  else            o={type:"cloud", x:W+30,w:74,fy:GY-36,h:62,puff:0};
+  o.passed=false;S.spawned++;S.obstacles.push(o);
+}
+function hitTest(o){
+  var pw=P.w-12,px_=P.x-P.w/2+6;
+  var ph=P.ducking?P.duckH:P.h,py=P.y-ph;
+  if(o.type==="pit"){ /* яма опасна только когда стоишь на земле */
+    return P.onGround && px_+pw>o.x+8 && px_<o.x+o.w-8;
+  }
+  var oy,oh;
+  if(o.type==="pigeon"||o.type==="flock"||o.type==="cloud"){oy=o.fy-o.h;oh=o.h;}
+  else{oy=GY-o.h;oh=o.h;}
+  return px_<o.x+o.w-6&&px_+pw>o.x+6&&py<oy+oh-6&&py+ph>oy+6;
+}
+
+var lastKeyT=0;
+function debounced(){var n=Date.now();if(n-lastKeyT<30)return false;lastKeyT=n;return true;}
+function doJump(){if(S.mode!=="run")return;if(!debounced())return;if(P.onGround&&!P.ducking){P.vy=JUMP;P.onGround=false;haptic("jump");}}
+function doDuck(on){if(S.mode!=="run")return;if(P.onGround)P.ducking=on;else if(!on)P.ducking=false;}
+
+var pStartY=null,pTimer=null;
+cv.addEventListener("pointerdown",function(e){
+  e.preventDefault();
+  try{cv.focus();}catch(ex){}
+  if(S.mode==="idle"){start();return;}
+  if(S.mode!=="run")return;
+  pStartY=e.clientY;
+  pTimer=setTimeout(function(){doJump();pTimer=null;},70);
+});
+cv.addEventListener("pointermove",function(e){
+  if(pStartY===null)return;
+  if(e.clientY-pStartY>28){
+    if(pTimer){clearTimeout(pTimer);pTimer=null;}
+    doDuck(true);
+  }
+});
+function pointerUp(){
+  if(pTimer){clearTimeout(pTimer);pTimer=null;doJump();}
+  doDuck(false);pStartY=null;
+}
+cv.addEventListener("pointerup",pointerUp);
+cv.addEventListener("pointercancel",pointerUp);
+function onKeyDown(e){
+  if(e.repeat)return;
+  var c=e.code||e.key;
+  if(c==="Space"||c===" "||c==="ArrowUp"||c==="Up"){e.preventDefault();if(S.mode==="idle")start();else if(S.mode==="over"){document.getElementById("overlay").style.display="none";start();}else doJump();}
+  if(c==="ArrowDown"||c==="Down"){e.preventDefault();doDuck(true);}
+}
+function onKeyUp(e){var c=e.code||e.key;if(c==="ArrowDown"||c==="Down")doDuck(false);}
+window.addEventListener("keydown",onKeyDown,true);
+document.addEventListener("keydown",onKeyDown,true);
+cv.addEventListener("keydown",onKeyDown,true);
+window.addEventListener("keyup",onKeyUp,true);
+document.addEventListener("keyup",onKeyUp,true);
+cv.addEventListener("keyup",onKeyUp,true);
+document.getElementById("againBtn").addEventListener("click",function(){
+  this.blur();                                   /* снять фокус, иначе пробел жмёт кнопку, а не прыжок */
+  document.getElementById("overlay").style.display="none";start();
+});
+
+function start(){
+  S.mode="run";S.t=0;S.speed=CFG.BASE_SPEED;S.dist=0;S.score=0;S.spawned=0;S.passedCount=0;
+  S.shownMs={};S.obstacles=[];S.biomeShown=-1;
+  resetPlayer();seedScenery();
+  document.getElementById("startTip").style.display="none";
+}
+function gameOver(){
+  S.mode="over";haptic("hit");
+  if(S.score>S.best){S.best=S.score;store.set("pechkin_best",String(S.best));}
+  document.getElementById("bestEl").textContent="🏆 "+S.best+" м";
+  document.getElementById("ovScore").textContent=S.score;
+  document.getElementById("overlay").style.display="flex";
+}
+var toastT=null;
+function toast(msg){
+  var el=document.getElementById("toast");
+  el.textContent=msg;el.style.opacity=1;
+  clearTimeout(toastT);toastT=setTimeout(function(){el.style.opacity=0;},1600);
+}
+
+function step(dtms){
+  if(S.mode!=="run")return;
+  S.t+=dtms;
+  var k=dtms/16.7,dx=S.speed*k;
+  S.dist+=dx;S.groundX=(S.groundX+dx)%40;
+  S.score=Math.floor(S.dist/8);
+  document.getElementById("scoreEl").textContent=S.score+" м";
+  for(var m in CFG.MILESTONES){if(S.score>=+m&&!S.shownMs[m]){S.shownMs[m]=1;toast(CFG.MILESTONES[m]);}}
+  var b=curBiome();
+  if(b!==S.biomeShown&&S.dist>200){
+    S.biomeShown=b;toast(CFG.BIOME_NAMES[b]);
+    for(var z=0;z<S.bg.length;z++){          /* невидимые справа — сразу в новую локацию */
+      if(S.bg[z].x>W+10)S.bg[z]=makeBg(S.bg[z].x,b);
+    }
+  }
+  else if(S.biomeShown===-1)S.biomeShown=b;
+  if(!P.onGround){P.vy+=GRAV*k;P.y+=P.vy*k;if(P.y>=GY){P.y=GY;P.vy=0;P.onGround=true;}}
+  P.frame+=dtms;
+  spawn();
+  var i,o;
+  for(i=0;i<S.obstacles.length;i++){o=S.obstacles[i];o.x-=dx;
+    if(o.type==="pigeon"){o.x-=1.5*k;o.wing+=dtms;}
+    if(o.type==="cat"){o.tail+=dtms;}
+    if(o.type==="flock"){o.wing+=dtms;}
+    if(o.type==="cloud"){o.puff+=dtms;}
+    if(!o.passed&&o.x+o.w<P.x-P.w/2){o.passed=true;S.passedCount++;S.speed=Math.min(CFG.MAX_SPEED,S.speed+CFG.SPEED_STEP);}}
+  while(S.obstacles.length&&S.obstacles[0].x<-90)S.obstacles.shift();
+  for(i=0;i<S.obstacles.length;i++){if(hitTest(S.obstacles[i]))return gameOver();}
+  /* фон-параллакс + пересев по текущей локации */
+  for(i=0;i<S.bg.length;i++){var bo=S.bg[i];bo.x-=dx*0.40;
+    if(bo.x+bo.w<-30){var mx=0;
+      for(var q=0;q<S.bg.length;q++)mx=Math.max(mx,S.bg[q].x+S.bg[q].w);
+      S.bg[i]=makeBg(mx+rnd(40,130),curBiome());}}
+  for(i=0;i<S.grass.length;i++){var gg=S.grass[i];gg.x-=dx;if(gg.x<-10){gg.x=W+Math.random()*60;gg.y=GY+6+Math.random()*(H-GY-14);}}
+  for(i=0;i<S.stones.length;i++){var st=S.stones[i];st.x-=dx;if(st.x<-10){st.x=W+Math.random()*60;st.y=GY+8+Math.random()*(H-GY-18);}}
+  for(i=0;i<S.clouds.length;i++)S.clouds[i].x-=S.clouds[i].s*k*(0.4+S.speed*0.12);
+  S.clouds=S.clouds.filter(function(c){return c.x>-90;});
+  if(S.clouds.length<3&&Math.random()<0.012)
+    S.clouds.push({x:W+50,y:30+Math.random()*H*0.22,s:rnd(0.3,0.7),r:rnd(16,36)});
+  if(S.birds.length<2&&Math.random()<0.004)
+    S.birds.push({x:W+30,y:40+Math.random()*H*0.18,wing:0});
+  for(i=0;i<S.birds.length;i++){S.birds[i].x-=k*1.6;S.birds[i].wing+=dtms;}
+  S.birds=S.birds.filter(function(bd){return bd.x>-30;});
+}
+
+function px(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x),Math.round(y),w,h);}
+function drawPlayer(){
+  var duck=P.ducking,bx=P.x,by=P.y;         /* bx — центр, by — уровень стоп */
+  var f=Math.floor(P.frame/100)%4;
+  var bob=P.onGround&&!duck?[0,-1.5,0,-1.5][f]:0;
+  var skin="#e8b58b",skinD="#dba270",coat="#3a5f8a",coatD="#2e4d72",
+      cap="#274363",bag="#a5652f",bagD="#7d4c21",mus="#4a3320",boot="#241d15";
+  function limb(x1,y1,x2,y2,wd,col){
+    ctx.strokeStyle=col;ctx.lineWidth=wd;ctx.lineCap="round";
+    ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  }
+  function ell(x,y,rx,ry,col,rot){
+    ctx.fillStyle=col;ctx.beginPath();ctx.ellipse(x,y,rx,ry,rot||0,0,7);ctx.fill();
+  }
+  if(!duck){
+    /* ноги: 4 фазы бега, скруглённые */
+    var la=[[-6,-2],[-2,-4],[2,-1],[-2,-4]][f];
+    var lb=[[6,-1],[2,-4],[-5,-2],[2,-4]][f];
+    limb(bx-3,by-20,bx+la[0],by+la[1]-2,7,"#27364a");
+    limb(bx+3,by-20,bx+lb[0],by+lb[1]-2,7,"#1f2c3d");
+    ell(bx+la[0]+2,by+la[1]-1,5,3,boot);
+    ell(bx+lb[0]+2,by+lb[1]-1,5,3,boot);
+    /* пухлое тело-шинель */
+    ell(bx,by-33+bob,16,18,coat);
+    ell(bx-5,by-30+bob,11,14,"#41689a");                 /* мягкий свет на груди */
+    /* ремень дугой по пузу */
+    ctx.strokeStyle="#22384f";ctx.lineWidth=4;
+    ctx.beginPath();ctx.arc(bx,by-40+bob,16,0.5,2.64);ctx.stroke();
+    ctx.fillStyle="#d9c46a";ctx.fillRect(bx-2,by-26+bob,4,4);  /* пряжка */
+    ell(bx-3,by-38+bob,1.6,1.6,"#d9c46a");                /* пуговицы */
+    ell(bx-3,by-31+bob,1.6,1.6,"#d9c46a");
+    /* ремень сумки через плечо + сумка */
+    ctx.strokeStyle=bagD;ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(bx-9,by-47+bob);ctx.lineTo(bx+12,by-28+bob);ctx.stroke();
+    ctx.fillStyle=bag;
+    ctx.beginPath();ctx.moveTo(bx+7,by-30+bob);
+    ctx.quadraticCurveTo(bx+7,by-34+bob,bx+11,by-34+bob);
+    ctx.lineTo(bx+18,by-34+bob);
+    ctx.quadraticCurveTo(bx+22,by-34+bob,bx+22,by-30+bob);
+    ctx.lineTo(bx+22,by-22+bob);
+    ctx.quadraticCurveTo(bx+22,by-18+bob,bx+18,by-18+bob);
+    ctx.lineTo(bx+11,by-18+bob);
+    ctx.quadraticCurveTo(bx+7,by-18+bob,bx+7,by-22+bob);
+    ctx.closePath();ctx.fill();
+    ctx.fillStyle=bagD;ctx.fillRect(bx+7,by-34+bob,15,3); /* клапан */
+    ctx.fillStyle="#f4ead2";ctx.fillRect(bx+10,by-24+bob,8,5); /* конверт */
+    ctx.strokeStyle="#c9b68d";ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(bx+10,by-24+bob);ctx.lineTo(bx+14,by-21+bob);ctx.lineTo(bx+18,by-24+bob);ctx.stroke();
+    /* рука-маятник */
+    var sw2=(f%2)?5:-4;
+    limb(bx-10,by-42+bob,bx-13,by-32+bob+sw2,6,coatD);
+    ell(bx-13,by-31+bob+sw2,3.4,3.4,skin);
+    /* голова: круглая, щекастая */
+    ell(bx+2,by-56+bob,10,9.4,skin);
+    ell(bx+6,by-53+bob,3.4,2.8,skinD);                    /* щека */
+    ell(bx+11,by-56+bob,2.6,2.2,skinD);                   /* нос-картошка */
+    /* усы: два пышных лепестка */
+    ell(bx+4,by-51+bob,6.4,3.2,mus,0.25);
+    ell(bx+10,by-52+bob,4.8,2.8,mus,-0.3);
+    ell(bx+6.5,by-49.6+bob,7,2,"#3a2818");
+    ctx.fillStyle="#222";ctx.beginPath();ctx.arc(bx+6,by-59+bob,1.6,0,7);ctx.fill(); /* глаз */
+    ctx.strokeStyle="#5a4a38";ctx.lineWidth=1.6;
+    ctx.beginPath();ctx.arc(bx+6,by-61+bob,2.6,3.5,5.9);ctx.stroke(); /* бровь */
+    /* фуражка: купол + околыш + козырёк */
+    ctx.fillStyle=cap;
+    ctx.beginPath();ctx.arc(bx+2,by-62+bob,10.4,Math.PI,0);ctx.fill();
+    ctx.fillStyle="#1b3049";
+    ctx.beginPath();ctx.ellipse(bx+2,by-62+bob,10.6,2.6,0,0,7);ctx.fill();
+    ctx.fillStyle=cap;
+    ctx.beginPath();ctx.moveTo(bx+4,by-62.5+bob);
+    ctx.quadraticCurveTo(bx+14,by-63.5+bob,bx+15,by-60+bob);
+    ctx.quadraticCurveTo(bx+8,by-60.5+bob,bx+4,by-60+bob);ctx.closePath();ctx.fill();
+    ell(bx+2,by-66+bob,1.8,1.8,"#d9c46a");                /* кокарда */
+  }else{
+    /* присед: круглый комок, голова вперёд */
+    var f2=Math.floor(P.frame/120)%2;
+    limb(bx-8,by-9,bx-13,by-2,7,"#27364a");
+    limb(bx+6,by-9,bx+12-(f2*3),by-2,7,"#1f2c3d");
+    ell(bx-13,by-2,5,3,boot);ell(bx+12-(f2*3),by-2,5,3,boot);
+    ell(bx,by-15,19,13,coat);                             /* тело-колобок */
+    ell(bx-6,by-13,12,9,"#41689a");
+    ctx.strokeStyle=bagD;ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(bx-6,by-25);ctx.lineTo(bx+10,by-12);ctx.stroke();
+    ctx.fillStyle=bag;
+    ctx.beginPath();ctx.moveTo(bx+8,by-14);
+    ctx.quadraticCurveTo(bx+8,by-17,bx+11,by-17);ctx.lineTo(bx+16,by-17);
+    ctx.quadraticCurveTo(bx+19,by-17,bx+19,by-14);ctx.lineTo(bx+19,by-8);
+    ctx.quadraticCurveTo(bx+19,by-5,bx+16,by-5);ctx.lineTo(bx+11,by-5);
+    ctx.quadraticCurveTo(bx+8,by-5,bx+8,by-8);ctx.closePath();ctx.fill();
+    /* голова вытянута вперёд */
+    ell(bx+13,by-25,9.4,8.6,skin);
+    ell(bx+21,by-25,2.4,2,skinD);                         /* нос */
+    ell(bx+15,by-21,6,2.8,mus,0.15);
+    ell(bx+20,by-21.6,4.2,2.4,mus,-0.25);
+    ctx.fillStyle="#222";ctx.beginPath();ctx.arc(bx+16,by-28,1.6,0,7);ctx.fill();
+    ctx.fillStyle=cap;
+    ctx.beginPath();ctx.arc(bx+12,by-30,9.6,Math.PI,0);ctx.fill();
+    ctx.fillStyle="#1b3049";
+    ctx.beginPath();ctx.ellipse(bx+12,by-30,9.8,2.4,0,0,7);ctx.fill();
+    ctx.fillStyle=cap;
+    ctx.beginPath();ctx.moveTo(bx+14,by-30.5);
+    ctx.quadraticCurveTo(bx+23,by-31.5,bx+24,by-28.5);
+    ctx.quadraticCurveTo(bx+18,by-29,bx+14,by-28.5);ctx.closePath();ctx.fill();
+    ell(bx+12,by-34,1.7,1.7,"#d9c46a");
+  }
+}
+function drawObstacle(o){
+  if(o.type==="bench"){
+    px(o.x-2,GY-o.h-2,o.w+4,4,"#4a3418");                 /* контур спинки */
+    px(o.x,GY-o.h,o.w,4,"#8a6237");                       /* спинка */
+    for(var i=0;i<3;i++)px(o.x+4+i*15,GY-o.h+4,4,8,"#8a6237");
+    px(o.x-2,GY-16,o.w+4,5,"#4a3418");
+    px(o.x,GY-15,o.w,4,"#a37c48");                        /* сиденье */
+    px(o.x+4,GY-11,4,11,"#3d2c17");px(o.x+o.w-8,GY-11,4,11,"#3d2c17"); /* ножки */
+  }else if(o.type==="pit"){
+    var pw2=o.w,cx=o.x+pw2/2;
+    /* мягкий тёмный провал со скруглённым дном */
+    var grd=ctx.createLinearGradient(0,GY,0,GY+20);
+    grd.addColorStop(0,"#4a3418");grd.addColorStop(0.4,"#241705");grd.addColorStop(1,"#0a0602");
+    ctx.fillStyle=grd;
+    ctx.beginPath();
+    ctx.moveTo(o.x,GY);
+    ctx.quadraticCurveTo(o.x+5,GY+18,cx,GY+19);
+    ctx.quadraticCurveTo(o.x+pw2-5,GY+18,o.x+pw2,GY);
+    ctx.closePath();ctx.fill();
+    /* тёмная чёткая кромка — читается издалека */
+    ctx.strokeStyle="#1a1005";ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(o.x-1,GY+1);ctx.lineTo(o.x+pw2+1,GY+1);ctx.stroke();
+    /* светлые гладкие бортики земли по краям */
+    ctx.fillStyle="#dbb67e";
+    ctx.beginPath();ctx.ellipse(o.x,GY,7,3.5,0,0,7);ctx.fill();
+    ctx.beginPath();ctx.ellipse(o.x+pw2,GY,7,3.5,0,0,7);ctx.fill();
+    /* блик на дальней стенке — объём */
+    ctx.fillStyle="rgba(219,182,126,.25)";
+    ctx.beginPath();ctx.ellipse(cx,GY+6,pw2*0.30,3,0,0,7);ctx.fill();
+  }else if(o.type==="box"){
+    px(o.x-2,GY-o.h-2,o.w+4,o.h+2,"#5c3f1d");
+    px(o.x,GY-o.h,o.w,o.h,"#c69454");
+    px(o.x,GY-o.h,o.w,6,"#e0b476");
+    px(o.x,GY-o.h,3,o.h,"#a5793f");
+    px(o.x+o.w/2-4,GY-o.h,8,o.h,"#efe4cb");
+    px(o.x+5,GY-o.h+11,15,10,"#f7f0dc");
+    ctx.fillStyle="#7d4f22";ctx.font="bold 7px Verdana";
+    ctx.fillText("ПОЧТА",o.x+5.5,GY-o.h+19);
+    px(o.x+o.w-12,GY-o.h+9,8,9,"#d94f2a");
+    px(o.x+o.w-11,GY-o.h+10,6,7,"#eb7a58");
+  }else if(o.type==="trash"){
+    px(o.x-2,GY-o.h-2,o.w+4,o.h+2,"#31402c");             /* контур */
+    px(o.x,GY-o.h,o.w,o.h,"#5d7a52");                     /* бак */
+    px(o.x,GY-o.h,o.w,5,"#74936a");
+    px(o.x-4,GY-o.h-4,o.w+8,6,"#4a6142");                 /* крышка набекрень */
+    px(o.x+6,GY-o.h-10,10,7,"#e5d9b8");                   /* торчащий мусор */
+    px(o.x+18,GY-o.h-8,8,5,"#d98f68");
+    px(o.x+8,GY-o.h+12,o.w-16,3,"#4a6142");
+    px(o.x+8,GY-o.h+22,o.w-16,3,"#4a6142");
+  }else if(o.type==="mailbox"){
+    px(o.x+o.w/2-3,GY-26,6,26,"#5c4a2e");                 /* столбик */
+    px(o.x-3,GY-o.h-2,o.w+6,30,"#1d3f66");                /* контур */
+    px(o.x-1,GY-o.h,o.w+2,26,"#2f5d94");                  /* ящик */
+    px(o.x-1,GY-o.h,o.w+2,5,"#3f74b5");
+    px(o.x+3,GY-o.h+9,o.w-4,3,"#1d3f66");                 /* щель */
+    ctx.fillStyle="#dce8f4";ctx.font="bold 6px Verdana";
+    ctx.fillText("ПОЧТА",o.x+1,GY-o.h+21);
+  }else if(o.type==="cat"){
+    var tw=Math.sin(o.tail/260)*4;
+    ctx.fillStyle="rgba(60,45,25,.22)";
+    ctx.beginPath();ctx.ellipse(o.x+o.w/2,GY+3,o.w*0.5,3,0,0,7);ctx.fill();
+    ctx.fillStyle="#5a524c";                            /* хвост */
+    ctx.beginPath();ctx.moveTo(o.x+2,GY-10);
+    ctx.quadraticCurveTo(o.x-8,GY-16,o.x-6+tw,GY-26);
+    ctx.quadraticCurveTo(o.x-2+tw,GY-28,o.x-1+tw,GY-25);
+    ctx.quadraticCurveTo(o.x-4,GY-14,o.x+5,GY-7);ctx.closePath();ctx.fill();
+    ctx.fillStyle="#6b625b";                            /* тело сидя */
+    ctx.beginPath();ctx.ellipse(o.x+o.w*0.45,GY-11,o.w*0.42,12,0,0,7);ctx.fill();
+    ctx.beginPath();ctx.arc(o.x+o.w-9,GY-22,7.5,0,7);ctx.fill();   /* голова */
+    ctx.beginPath();ctx.moveTo(o.x+o.w-15,GY-27);ctx.lineTo(o.x+o.w-13,GY-33);ctx.lineTo(o.x+o.w-10,GY-28);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(o.x+o.w-8,GY-28);ctx.lineTo(o.x+o.w-5,GY-33);ctx.lineTo(o.x+o.w-3,GY-27);ctx.closePath();ctx.fill();
+    px(o.x+o.w-12,GY-23,2,2,"#efe08a");px(o.x+o.w-7,GY-23,2,2,"#efe08a");
+    ctx.fillStyle="#e8b9c4";px(o.x+o.w-9,GY-20,2,1.5,"#e8b9c4");   /* носик */
+    px(o.x+o.w*0.32,GY-4,5,4,"#5a524c");px(o.x+o.w*0.58,GY-4,5,4,"#5a524c"); /* лапки */
+  }else if(o.type==="barrel"){
+    px(o.x-2,GY-o.h-2,o.w+4,o.h+2,"#4a3418");
+    ctx.fillStyle="#8a6237";
+    ctx.beginPath();ctx.ellipse(o.x+o.w/2,GY-o.h/2,o.w/2,o.h/2,0,0,7);ctx.fill();
+    ctx.fillStyle="#9c7440";
+    ctx.beginPath();ctx.ellipse(o.x+o.w/2-4,GY-o.h/2,o.w/2-6,o.h/2-3,0,0,7);ctx.fill();
+    px(o.x-1,GY-o.h+8,o.w+2,4,"#5c4325");               /* обручи */
+    px(o.x-1,GY-14,o.w+2,4,"#5c4325");
+    px(o.x+6,GY-o.h+4,4,o.h-8,"rgba(255,255,255,.14)"); /* блик */
+  }else if(o.type==="flock"){
+    /* стая ворон стеной от земли до неба — только пригнувшись */
+    ctx.fillStyle="rgba(60,45,25,.20)";
+    ctx.beginPath();ctx.ellipse(o.x+o.w/2,GY+5,o.w*0.55,4,0,0,7);ctx.fill();
+    var pos=[[10,-46],[34,-64],[14,-84],[38,-104],[18,-124],[36,-142]];
+    for(var fi=0;fi<pos.length;fi++){
+      var bx2=o.x+pos[fi][0], by2=GY+pos[fi][1]+Math.sin(o.wing/240+fi)*3;
+      var fw=Math.floor((o.wing+fi*90)/95)%3;
+      ctx.fillStyle="#3d4046";                            /* тело вороны */
+      ctx.beginPath();ctx.ellipse(bx2,by2,9,5,0,0,7);ctx.fill();
+      ctx.beginPath();ctx.arc(bx2+8,by2-2,3.4,0,7);ctx.fill(); /* голова */
+      ctx.fillStyle="#8c8f96";                            /* клюв */
+      ctx.beginPath();ctx.moveTo(bx2+11,by2-3);ctx.lineTo(bx2+15,by2-2);ctx.lineTo(bx2+11,by2-1);ctx.closePath();ctx.fill();
+      ctx.fillStyle="#24262b";                            /* крыло */
+      ctx.beginPath();
+      if(fw===0)      ctx.ellipse(bx2-1,by2-6,8,3.4,-0.5,0,7);
+      else if(fw===1) ctx.ellipse(bx2-1,by2,  9,2.8, 0,  0,7);
+      else            ctx.ellipse(bx2-1,by2+5,8,3.4, 0.5,0,7);
+      ctx.fill();}
+  }else if(o.type==="cloud"){
+    /* низкая грозовая тучка над самой дорогой — подныривай */
+    ctx.fillStyle="rgba(60,45,25,.22)";
+    ctx.beginPath();ctx.ellipse(o.x+o.w/2,GY+5,o.w*0.55,4,0,0,7);ctx.fill();
+    var bob2=Math.sin(o.puff/500)*3;
+    var cx3=o.x+o.w/2, base=GY-50+bob2;
+    /* длинное плоское брюхо */
+    ctx.fillStyle="#8a95a1";
+    ctx.beginPath();ctx.ellipse(cx3,base,o.w*0.5,12,0,0,7);ctx.fill();
+    /* невысокие клубы сверху — общий силуэт лежачий, как настоящая низкая туча */
+    ctx.fillStyle="#9aa6b2";
+    ctx.beginPath();
+    ctx.arc(cx3-o.w*0.30,base-10,13,0,7);
+    ctx.arc(cx3-o.w*0.05,base-16,16,0,7);
+    ctx.arc(cx3+o.w*0.22,base-11,12,0,7);ctx.fill();
+    ctx.fillStyle="#b4bfc9";
+    ctx.beginPath();
+    ctx.arc(cx3-o.w*0.18,base-22,10,0,7);
+    ctx.arc(cx3+o.w*0.08,base-24,11,0,7);ctx.fill();
+    ctx.fillStyle="rgba(255,255,255,.25)";
+    ctx.beginPath();ctx.arc(cx3+o.w*0.02,base-27,6,0,7);ctx.fill();
+    /* молния на брюхе */
+    ctx.fillStyle="#f2d24b";
+    ctx.beginPath();
+    ctx.moveTo(cx3-2,base+6);ctx.lineTo(cx3+5,base+6);ctx.lineTo(cx3+1,base+12);
+    ctx.lineTo(cx3+6,base+12);ctx.lineTo(cx3-4,base+22);ctx.lineTo(cx3,base+14);
+    ctx.lineTo(cx3-5,base+14);ctx.closePath();ctx.fill();
+  }else{ /* pigeon */
+    var cx2=o.x+o.w/2, cy2=o.fy-o.h/2;
+    /* тень на земле */
+    ctx.fillStyle="rgba(60,45,25,.26)";
+    ctx.beginPath();ctx.ellipse(cx2,GY+6,o.w*0.45,3,0,0,7);ctx.fill();
+    var ph2=Math.floor(o.wing/95)%3;              /* фаза взмаха */
+    var tilt=[-0.06,0,0.06][ph2];
+    /* хвост */
+    ctx.fillStyle="#aab6c2";
+    ctx.beginPath();ctx.moveTo(o.x-7,cy2-3);ctx.lineTo(o.x+3,cy2-1);
+    ctx.lineTo(o.x+3,cy2+3);ctx.lineTo(o.x-7,cy2+2);ctx.closePath();ctx.fill();
+    /* тело — гладкий овал */
+    ctx.fillStyle="#dfe6ec";
+    ctx.beginPath();ctx.ellipse(cx2,cy2,o.w*0.42,o.h*0.42,tilt,0,7);ctx.fill();
+    /* грудка чуть темнее */
+    ctx.fillStyle="#c3ccd6";
+    ctx.beginPath();ctx.ellipse(cx2-2,cy2+2,o.w*0.30,o.h*0.28,tilt,0,7);ctx.fill();
+    /* голова */
+    ctx.fillStyle="#dfe6ec";
+    ctx.beginPath();ctx.arc(o.x+o.w-3,cy2-3,4.5,0,7);ctx.fill();
+    /* клюв */
+    ctx.fillStyle="#e0a03c";
+    ctx.beginPath();ctx.moveTo(o.x+o.w+1,cy2-4);ctx.lineTo(o.x+o.w+6,cy2-2.5);
+    ctx.lineTo(o.x+o.w+1,cy2-1);ctx.closePath();ctx.fill();
+    /* глаз */
+    ctx.fillStyle="#26292e";
+    ctx.beginPath();ctx.arc(o.x+o.w-2,cy2-4,1.3,0,7);ctx.fill();
+    /* крыло: плавный взмах тремя фазами */
+    ctx.fillStyle="#7e8c9c";
+    ctx.beginPath();
+    if(ph2===0)      ctx.ellipse(cx2-1,cy2-7,o.w*0.30,4.5,-0.5,0,7);   /* вверх */
+    else if(ph2===1) ctx.ellipse(cx2-1,cy2,  o.w*0.34,3.5, 0,  0,7);   /* в сторону */
+    else             ctx.ellipse(cx2-1,cy2+6,o.w*0.28,4.5, 0.5,0,7);   /* вниз */
+    ctx.fill();
+  }
+}
+function drawBg(o){
+  if(o.kind==="house"){
+    px(o.x,GY-o.h,o.w,o.h,o.wall);
+    px(o.x,GY-o.h,o.w,4,"rgba(0,0,0,.12)");
+    ctx.fillStyle=o.roof;ctx.beginPath();
+    ctx.moveTo(o.x-6,GY-o.h);ctx.lineTo(o.x+o.w/2,GY-o.h-20);ctx.lineTo(o.x+o.w+6,GY-o.h);ctx.fill();
+    if(o.attic){px(o.x+o.w/2-4,GY-o.h-12,8,8,"#f2e6c8");px(o.x+o.w/2-4,GY-o.h-8,8,1,"#8a6a3d");}
+    if(o.chim){px(o.x+o.w-18,GY-o.h-14,8,14,"#7d5a44");px(o.x+o.w-19,GY-o.h-16,10,3,"#5f4433");}
+    var i;
+    for(i=0;i<o.win;i++){var wx=o.x+9+i*((o.w-24)/Math.max(1,o.win-1||1));
+      px(wx,GY-o.h+12,11,12,"#ffe9a8");
+      px(wx,GY-o.h+17,11,1,"#8a6a3d");px(wx+5,GY-o.h+12,1,12,"#8a6a3d");
+      px(wx-1,GY-o.h+11,13,1,"#f4ead2");}
+    px(o.x+o.w-22,GY-22,13,22,"#5f4a30");                  /* дверь */
+    px(o.x+o.w-12,GY-12,2,2,"#d9c46a");
+    if(o.fence)for(i=0;i<Math.floor(o.w/10);i++)px(o.x+i*10,GY-9,4,9,"#8a7250");
+  }else if(o.kind==="tree"){
+    px(o.x+o.w/2-4,GY-o.h*0.45,8,o.h*0.45,"#6b5232");
+    ctx.fillStyle=o.tone;
+    ctx.beginPath();ctx.arc(o.x+o.w/2,GY-o.h*0.62,o.w*0.5,0,7);ctx.fill();
+    ctx.beginPath();ctx.arc(o.x+o.w*0.28,GY-o.h*0.48,o.w*0.34,0,7);ctx.fill();
+    ctx.beginPath();ctx.arc(o.x+o.w*0.74,GY-o.h*0.48,o.w*0.34,0,7);ctx.fill();
+    ctx.fillStyle="rgba(255,255,255,.12)";
+    ctx.beginPath();ctx.arc(o.x+o.w*0.4,GY-o.h*0.7,o.w*0.2,0,7);ctx.fill();
+  }else if(o.kind==="bush"){
+    ctx.fillStyle="#5d8a4e";
+    ctx.beginPath();ctx.arc(o.x+o.w*0.3,GY-o.h*0.5,o.h*0.6,0,7);
+    ctx.arc(o.x+o.w*0.6,GY-o.h*0.7,o.h*0.7,0,7);
+    ctx.arc(o.x+o.w*0.85,GY-o.h*0.4,o.h*0.5,0,7);ctx.fill();
+  }else if(o.kind==="hay"){
+    ctx.fillStyle="#d9b45f";
+    ctx.beginPath();ctx.arc(o.x+o.w/2,GY-2,o.w/2,Math.PI,0);ctx.fill();
+    ctx.strokeStyle="#b3903f";ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(o.x+6,GY-4);ctx.quadraticCurveTo(o.x+o.w/2,GY-o.h,o.x+o.w-6,GY-4);ctx.stroke();
+  }else if(o.kind==="mill"){
+    px(o.x+o.w/2-9,GY-o.h,18,o.h,"#a8896b");               /* башня */
+    px(o.x+o.w/2-11,GY-o.h,22,5,"#8a6a4b");
+    ctx.strokeStyle="#5f4a30";ctx.lineWidth=3;
+    var cx=o.x+o.w/2,cy=GY-o.h+4;
+    ctx.beginPath();ctx.moveTo(cx-20,cy-14);ctx.lineTo(cx+20,cy+14);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(cx-20,cy+14);ctx.lineTo(cx+20,cy-14);ctx.stroke();
+  }else if(o.kind==="city"){
+    px(o.x,GY-o.h,o.w,o.h,o.wall);
+    px(o.x,GY-o.h,o.w,3,"rgba(0,0,0,.08)");
+    px(o.x,GY-o.h,3,o.h,"rgba(0,0,0,.05)");
+    if(o.lit===undefined){o.lit=[];var rows0=Math.floor(o.h/24);
+      for(var q2=0;q2<rows0*o.cols;q2++)o.lit.push(Math.random()<0.25);}
+    var rows=Math.floor(o.h/24);
+    for(var r2=0;r2<rows;r2++)for(var c2=0;c2<o.cols;c2++){
+      var on=o.lit[r2*o.cols+c2];
+      px(o.x+8+c2*((o.w-20)/o.cols),GY-o.h+10+r2*24,9,11,on?"#e3d8ae":"#95a0ab");}
+    if(o.ant){px(o.x+o.w/2-1,GY-o.h-14,2,14,"#6f7680");}
+    /* лёгкая дымка — дома тают в воздухе, не режут глаз */
+    var hz=ctx.createLinearGradient(0,GY-o.h,0,GY);
+    hz.addColorStop(0,"rgba(190,215,230,.30)");hz.addColorStop(1,"rgba(190,215,230,.05)");
+    ctx.fillStyle=hz;ctx.fillRect(o.x,GY-o.h,o.w,o.h);
+  }
+}
+function drawScenery(){
+  ctx.fillStyle="#ffe9a8";ctx.beginPath();ctx.arc(W*0.82,H*0.14,26,0,7);ctx.fill();
+  ctx.fillStyle="#fff3c9";ctx.beginPath();ctx.arc(W*0.82,H*0.14,18,0,7);ctx.fill();
+  var i;
+  ctx.strokeStyle="rgba(60,60,70,.55)";ctx.lineWidth=2;
+  for(i=0;i<S.birds.length;i++){var b=S.birds[i],f=Math.floor(b.wing/160)%2?3:-1;
+    ctx.beginPath();ctx.moveTo(b.x-6,b.y);ctx.quadraticCurveTo(b.x-2,b.y+f,b.x,b.y);
+    ctx.quadraticCurveTo(b.x+2,b.y+f,b.x+6,b.y);ctx.stroke();}
+  ctx.fillStyle="rgba(255,255,255,.88)";
+  for(i=0;i<S.clouds.length;i++){var c=S.clouds[i];ctx.beginPath();
+    ctx.arc(c.x,c.y,c.r,0,7);ctx.arc(c.x+c.r*0.9,c.y+4,c.r*0.7,0,7);
+    ctx.arc(c.x-c.r*0.8,c.y+5,c.r*0.6,0,7);ctx.fill();}
+  for(i=0;i<S.bg.length;i++)drawBg(S.bg[i]);
+}
+function draw(){
+  var g=ctx.createLinearGradient(0,0,0,GY);
+  g.addColorStop(0,"#9fd9ef");g.addColorStop(0.7,"#cdeee0");g.addColorStop(1,"#e8f5d5");
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,GY);
+  drawScenery();
+  px(0,GY,W,H-GY,"#c9a36b");
+  ctx.strokeStyle="#8a6a3d";ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(0,GY);ctx.lineTo(W,GY);ctx.stroke();
+  var x;
+  for(x=-S.groundX;x<W;x+=40)px(x,GY+10,14,3,"#b18e57");
+  var i;
+  for(i=0;i<S.stones.length;i++){var st=S.stones[i];
+    ctx.fillStyle="#ab8756";ctx.beginPath();ctx.arc(st.x,st.y,st.r,0,7);ctx.fill();}
+  for(i=0;i<S.grass.length;i++){var gr=S.grass[i];
+    px(gr.x,gr.y-5,2,5,"#7d9b4e");px(gr.x+3,gr.y-7,2,7,"#8fae5c");px(gr.x+6,gr.y-4,2,4,"#7d9b4e");}
+  for(i=0;i<S.obstacles.length;i++)drawObstacle(S.obstacles[i]);
+  drawPlayer();
+  if(S.mode==="idle"){
+    ctx.fillStyle="rgba(43,33,24,.8)";ctx.font="bold 21px Verdana";ctx.textAlign="center";
+    ctx.fillText("📮 Печкин спешит",W/2,H*0.30);
+    ctx.font="14px Verdana";
+    ctx.fillText("Догоните уехавший велосипед!",W/2,H*0.30+26);
+    ctx.fillText("Нажмите, чтобы начать",W/2,H*0.30+50);
+    ctx.textAlign="left";
+  }
+}
+var prev=performance.now();
+function loop(now){
+  var dt=Math.min(50,now-prev);prev=now;
+  step(dt);draw();
+  requestAnimationFrame(loop);
+}
+resize();
+try{cv.focus();}catch(ex){}
+seedScenery();
+document.getElementById("bestEl").textContent="🏆 "+S.best+" м";
+resetPlayer();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
