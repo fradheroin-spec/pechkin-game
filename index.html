@@ -84,7 +84,15 @@ var store={
 (function(){try{
   var s=document.createElement("script");
   s.src="https://telegram.org/js/telegram-web-app.js";
-  s.onload=function(){try{var t=window.Telegram&&window.Telegram.WebApp;if(t){t.ready();t.expand();}}catch(e){}};
+  s.onload=function(){try{
+    var t=window.Telegram&&window.Telegram.WebApp;
+    if(t){
+      t.ready();t.expand();
+      /* запрет сворачивания свайпом вниз (iOS): присед больше не закрывает окно */
+      if(typeof t.disableVerticalSwipes==="function")t.disableVerticalSwipes();
+      else if(typeof t.setupSwipeBehavior==="function")t.setupSwipeBehavior({allow_vertical_swipe:false});
+    }
+  }catch(e){}};
   document.head.appendChild(s);
 }catch(e){}})();
 function haptic(type){try{
